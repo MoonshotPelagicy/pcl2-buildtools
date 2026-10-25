@@ -4,7 +4,9 @@ param(
     [string]$UpstreamRepository,
 
     [Parameter(Mandatory = $true)]
-    [string]$DownstreamRepository
+    [string]$DownstreamRepository,
+
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,7 +51,7 @@ catch {
 # Every release created by this workflow has this tag. Comparing against the
 # downstream latest Release avoids creating a second Release for one upstream tag.
 $releaseTag = "pcl-$upstreamTag-patched"
-$shouldBuild = $null -eq $downstream -or [string]$downstream.tag_name -ne $releaseTag
+$shouldBuild = $Force -or $null -eq $downstream -or [string]$downstream.tag_name -ne $releaseTag
 
 Write-Host "Upstream latest Release: $upstreamTag"
 if ($null -eq $downstream) {

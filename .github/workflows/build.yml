@@ -5,6 +5,12 @@ on:
     # Check the upstream stable Release once a day.
     - cron: "17 2 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild the current upstream Release and replace its asset
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -43,6 +49,7 @@ jobs:
           ./scripts/check-upstream-release.ps1
           -UpstreamRepository "$env:UPSTREAM_REPOSITORY"
           -DownstreamRepository "$env:DOWNSTREAM_REPOSITORY"
+          -Force:$('${{ inputs.force }}' -eq 'true')
 
   build:
     name: Patch and build
@@ -119,17 +126,17 @@ jobs:
               throw "Release executable was not produced: $executable"
           }
 
-          $assetName = "PCL-$env:UPSTREAM_TAG-patched.zip"
+          $assetName = "PCL-$env:UPSTREAM_TAG-patched.exe"
           $assetPath = Join-Path $env:RUNNER_TEMP $assetName
           Remove-Item -LiteralPath $assetPath -Force -ErrorAction SilentlyContinue
-          Compress-Archive -Path (Join-Path $outputRoot '*') -DestinationPath $assetPath -CompressionLevel Optimal
+          Copy-Item -LiteralPath $executable -Destination $assetPath -Force
           "RELEASE_ASSET=$assetPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
           name: PCL-${{ needs.check-upstream.outputs.upstream_tag }}-patched
-          path: pcl/Plain Craft Launcher 2/bin/**
+          path: pcl/Plain Craft Launcher 2/bin/Plain Craft Launcher 2.exe
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -149,7 +156,25 @@ jobs:
           Applied patch: `RestrictMcDownload = False`.
           "@ | Set-Content -LiteralPath $notesPath -Encoding utf8
 
-          gh release create $env:RELEASE_TAG $env:RELEASE_ASSET `
+          $oldZipName = "PCL-$env:UPSTREAM_TAG-patched.zip"
+          gh release delete-asset $env:RELEASE_TAG $oldZipName `
             --repo $env:DOWNSTREAM_REPOSITORY `
-            --title "PCL $env:UPSTREAM_TAG (patched)" `
-            --notes-file $notesPath
+            --yes 1>$null 2>$null
+
+          gh release view $env:RELEASE_TAG `
+            --repo $env:DOWNSTREAM_REPOSITORY 1>$null 2>$null
+          if ($LASTEXITCODE -eq 0) {
+              gh release upload $env:RELEASE_TAG $env:RELEASE_ASSET `
+                --repo $env:DOWNSTREAM_REPOSITORY `
+                --clobber
+              gh release edit $env:RELEASE_TAG `
+                --repo $env:DOWNSTREAM_REPOSITORY `
+                --title "PCL $env:UPSTREAM_TAG (patched)" `
+                --notes-file $notesPath
+          }
+          else {
+              gh release create $env:RELEASE_TAG $env:RELEASE_ASSET `
+                --repo $env:DOWNSTREAM_REPOSITORY `
+                --title "PCL $env:UPSTREAM_TAG (patched)" `
+                --notes-file $notesPath
+          }
