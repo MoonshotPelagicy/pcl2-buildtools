@@ -23,6 +23,7 @@ $sourceRoot = Join-Path $PclRoot 'Plain Craft Launcher 2'
 $modSecretPath = Join-Path (Join-Path $sourceRoot 'Modules') 'ModSecret.vb'
 $modBasePath = Join-Path (Join-Path $sourceRoot 'Modules') 'Base\ModBase.vb'
 $formMainPath = Join-Path $sourceRoot 'FormMain.xaml.vb'
+$updateTemplatePath = Join-Path $PSScriptRoot 'modsecret-update.vb'
 
 if (-not (Test-Path -LiteralPath $modSecretPath -PathType Leaf)) {
     throw "Patch target does not exist: $modSecretPath"
@@ -32,6 +33,9 @@ if (-not (Test-Path -LiteralPath $modBasePath -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $formMainPath -PathType Leaf)) {
     throw "Startup prompt target does not exist: $formMainPath"
+}
+if (-not (Test-Path -LiteralPath $updateTemplatePath -PathType Leaf)) {
+    throw "Update implementation template does not exist: $updateTemplatePath"
 }
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
@@ -124,6 +128,49 @@ $formMain = Replace-ExactOnce `
     -Old $openSourcePrompt `
     -New '' `
     -Description 'open-source startup prompt'
+
+$updateRegion = @'
+#Region "更新"
+
+    Friend Sub UpdateCheckByButton()
+        Hint("该版本中不包含更新功能……")
+    End Sub
+
+    Friend IsUpdateWaitingRestart As Boolean = False
+    Public Sub UpdateRestart(TriggerRestartAndByEnd As Boolean)
+    End Sub
+    Public Sub UpdateReplace(ProcessId As Integer, OldFileName As String, NewFileName As String, TriggerRestart As Boolean)
+    End Sub
+
+    ''' <summary>
+    ''' 确保 PathTemp/Latest.exe 是最新正式版的 PCL，它会被用于整合包打包。
+    ''' 如果不是，则下载一个。
+    ''' </summary>
+    Friend Sub DownloadLatestPCL(Optional LoaderToSyncProgress As LoaderBase = Nothing)
+        '注意：如果要自行实现这个功能，请换用另一个文件路径，以免与官方版本冲突
+    End Sub
+
+#End Region
+
+#Region "联网配置"
+
+    ''' <summary>
+    ''' 联网获取的配置信息。
+    ''' 若获取失败或仍在获取中，可能为 Nothing。
+    ''' </summary>
+    Public ServerConfig As JObject
+
+    Public ServerLoader As New LoaderTask(Of Integer, Integer)("PCL 配置更新", Sub() Logger.Info("该版本中不包含更新通知功能……"), Priority:=ThreadPriority.BelowNormal) With
+        {.ReloadTimeout = 1000 * 60 * 60} '超时 1 小时
+
+#End Region
+'@
+$updateImplementation = [System.IO.File]::ReadAllText($updateTemplatePath, $utf8NoBom)
+$modSecret = Replace-ExactOnce `
+    -Text $modSecret `
+    -Old $updateRegion `
+    -New $updateImplementation `
+    -Description 'disabled update implementation'
 
 [System.IO.File]::WriteAllText($modSecretPath, $modSecret, $utf8NoBom)
 [System.IO.File]::WriteAllText($modBasePath, $modBase, $utf8NoBom)
