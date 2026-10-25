@@ -1,0 +1,9 @@
+.tldr/
+.tldrignore
+
+# Local build and secret files
+.env
+.env.*
+*.pfx
+*.key
+secrets.*

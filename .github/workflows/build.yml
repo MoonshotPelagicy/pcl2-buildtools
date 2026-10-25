@@ -1,0 +1,155 @@
+name: Build patched PCL release
+
+on:
+  schedule:
+    # Check the upstream stable Release once a day.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pcl2-upstream-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: meloong-git/pcl
+
+jobs:
+  check-upstream:
+    name: Check upstream Release
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.release.outputs.should_build }}
+      upstream_tag: ${{ steps.release.outputs.upstream_tag }}
+      upstream_release_url: ${{ steps.release.outputs.upstream_release_url }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+
+    steps:
+      - name: Checkout build tools
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - name: Compare upstream and downstream Releases
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOWNSTREAM_REPOSITORY: ${{ github.repository }}
+        run: >-
+          ./scripts/check-upstream-release.ps1
+          -UpstreamRepository "$env:UPSTREAM_REPOSITORY"
+          -DownstreamRepository "$env:DOWNSTREAM_REPOSITORY"
+
+  build:
+    name: Patch and build
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout build tools
+        uses: actions/checkout@v6
+        with:
+          path: buildtools
+          fetch-depth: 1
+          submodules: true
+
+      - name: Checkout upstream PCL
+        uses: actions/checkout@v6
+        with:
+          repository: meloong-git/pcl
+          ref: ${{ needs.check-upstream.outputs.upstream_tag }}
+          path: pcl
+          fetch-depth: 1
+          submodules: true
+
+      - name: Record upstream commit
+        shell: pwsh
+        run: |
+          $sourceRoot = Join-Path $env:GITHUB_WORKSPACE 'pcl'
+          $commit = (git -C $sourceRoot rev-parse HEAD).Trim()
+          "UPSTREAM_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Apply source patch
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        env:
+          PCL_MS_CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          PCL_CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+        run: >-
+          ./buildtools/scripts/patch-pcl.ps1
+          -PclRoot "$env:GITHUB_WORKSPACE\pcl"
+          -CommitHash "$env:UPSTREAM_COMMIT"
+
+      - name: Setup MSBuild.exe
+        uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: x64
+
+      - name: Update Help
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: ./buildtools/scripts/update-help.ps1 -PclRoot "$env:GITHUB_WORKSPACE\pcl"
+
+      - name: Restore NuGet packages
+        shell: pwsh
+        working-directory: ${{ github.workspace }}\pcl
+        run: dotnet restore PCLCS\PCLCS.csproj
+
+      - name: Build Release
+        shell: pwsh
+        working-directory: ${{ github.workspace }}\pcl
+        run: msbuild "Plain Craft Launcher 2\Plain Craft Launcher 2.vbproj" -p:Configuration=Release
+
+      - name: Package build output
+        id: package
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        env:
+          UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
+        run: |
+          $sourceRoot = Join-Path $env:GITHUB_WORKSPACE 'pcl'
+          $outputRoot = Join-Path $sourceRoot 'Plain Craft Launcher 2\bin'
+          $executable = Join-Path $outputRoot 'Plain Craft Launcher 2.exe'
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+              throw "Release executable was not produced: $executable"
+          }
+
+          $assetName = "PCL-$env:UPSTREAM_TAG-patched.zip"
+          $assetPath = Join-Path $env:RUNNER_TEMP $assetName
+          Remove-Item -LiteralPath $assetPath -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path (Join-Path $outputRoot '*') -DestinationPath $assetPath -CompressionLevel Optimal
+          "RELEASE_ASSET=$assetPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PCL-${{ needs.check-upstream.outputs.upstream_tag }}-patched
+          path: pcl/Plain Craft Launcher 2/bin/**
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOWNSTREAM_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.check-upstream.outputs.release_tag }}
+          UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
+          UPSTREAM_RELEASE_URL: ${{ needs.check-upstream.outputs.upstream_release_url }}
+        run: |
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          @"
+          Built from upstream release [$env:UPSTREAM_TAG]($env:UPSTREAM_RELEASE_URL).
+
+          Applied patch: `RestrictMcDownload = False`.
+          "@ | Set-Content -LiteralPath $notesPath -Encoding utf8
+
+          gh release create $env:RELEASE_TAG $env:RELEASE_ASSET `
+            --repo $env:DOWNSTREAM_REPOSITORY `
+            --title "PCL $env:UPSTREAM_TAG (patched)" `
+            --notes-file $notesPath
