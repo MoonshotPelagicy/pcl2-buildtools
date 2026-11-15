@@ -12,6 +12,13 @@
         Return New System.Version(TagName)
     End Function
 
+    Private Function GetUpdateCommit() As String
+        If ServerConfig Is Nothing OrElse ServerConfig("body") Is Nothing Then Return Nothing
+        Dim CommitMatch = System.Text.RegularExpressions.Regex.Match(ServerConfig("body").ToString,
+            "^Upstream commit: ([0-9a-f]{40})\r?$", System.Text.RegularExpressions.RegexOptions.Multiline Or System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+        Return If(CommitMatch.Success, CommitMatch.Groups(1).Value, Nothing)
+    End Function
+
     Private Function GetUpdateDownloadUrl() As String
         If ServerConfig Is Nothing OrElse ServerConfig("assets") Is Nothing Then Return Nothing
         For Each AssetToken As JToken In ServerConfig("assets")
@@ -36,7 +43,12 @@
                 Dim LatestVersion = GetUpdateVersion()
                 If LatestVersion Is Nothing Then Throw New Exception("GitHub Release 标签格式无法识别")
                 Dim CurrentVersion = New System.Version(VersionBaseName)
-                If LatestVersion.CompareTo(CurrentVersion) <= 0 Then
+                Dim LatestCommit = GetUpdateCommit()
+                Dim SameVersionRebuilt = LatestVersion.CompareTo(CurrentVersion) = 0 AndAlso
+                    Not String.IsNullOrEmpty(LatestCommit) AndAlso
+                    Not String.Equals(LatestCommit, CommitHash, StringComparison.OrdinalIgnoreCase)
+                If LatestVersion.CompareTo(CurrentVersion) < 0 OrElse
+                    (LatestVersion.CompareTo(CurrentVersion) = 0 AndAlso Not SameVersionRebuilt) Then
                     Hint($"已经是最新正式版 {VersionBaseName}，不需要更新啦，可以直接使用！", HintType.Green)
                 ElseIf MyMsgBox($"发现 PCL 新版本 {LatestVersion}，是否立即下载？", "发现更新！", "更新！冲！", "取消") = 1 Then
                     UpdateStart(False)
